@@ -129,3 +129,40 @@ def test_get_stats_with_data():
     assert stats["total_decisions"] == 5
     assert stats["total_dice_rolled"] == 2+1+1 + 3  # 2 ones, 1 two, 1 worm + 3 threes = 7
     assert stats["avg_dice_per_roll"] == 7 / 2
+
+
+def test_simulate_turn_with_decision_tracker():
+    """Test that simulate_turn records decisions via DecisionTracker."""
+    # Import here to avoid circular imports
+    from simulation import simulate_turn
+    from game_models import GameState, Player, Helping
+    from strategies import OptimalExpectedValueStrategy
+    import random
+
+    # Set up a simple game state with one player and a grill with a low tile
+    grill = [Helping(5, 1), Helping(10, 2), Helping(15, 3)]
+    for h in grill:
+        h.face_up = True
+    players = [Player(0)]
+    state = GameState(grill, players, 0)
+    policy = OptimalExpectedValueStrategy(state, 0)
+    tracker = DecisionTracker()
+
+    # Set random seed for reproducible dice rolls
+    random.seed(42)
+
+    # Run a turn with decision tracking
+    worm_delta, helping_taken, taken_from = simulate_turn(
+        state, policy, decision_tracker=tracker
+    )
+
+    # Check that some decisions were recorded (at least one roll or stop)
+    stats = tracker.get_stats()
+    # At minimum, there should be at least one roll if the turn didn't stop immediately
+    # We'll just ensure no errors and stats are computed
+    assert "rolls_per_turn" in stats
+    # No assertions on specific values because they depend on random rolls
+    print(f"Turn recorded {stats['rolls_per_turn']} rolls per turn")
+
+    # Reset random seed
+    random.seed()

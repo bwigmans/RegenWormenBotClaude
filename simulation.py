@@ -7,6 +7,8 @@ from typing import Tuple, Optional, List
 from game_models import Helping, Player, GameState, EnhancedGameState, SYM_TO_ID, ID_TO_SYM, NUM_DICE, HELPINGS
 from dice_utils import collection_sum, has_worm
 from strategies import BaseTurnStrategy, create_strategy, OptimalExpectedValueStrategy, TurnPolicy
+from decision_engine import stop_reward, compute_turn_values
+from strategy_benchmark import DecisionTracker
 
 class Commentator:
     """Generates funny commentary for game events."""
@@ -209,30 +211,43 @@ def apply_turn_outcome(global_state: GameState, worm_delta: int, helping_taken: 
         flip_highest_face_down(grill, excluded_helping=lost)
     # Note: worm count is implicit in the helpings, no separate tracking needed.
 
-def simulate_turn(global_state: GameState, policy: BaseTurnStrategy, player: int = None, commentator=None) -> Tuple[int, Optional[Helping], int]:
+def simulate_turn(global_state: GameState, policy: BaseTurnStrategy, player: int = None, commentator=None, decision_tracker: Optional[DecisionTracker] = None) -> Tuple[int, Optional[Helping], int]:
     """
     Simulate a single turn for the current player using the given policy.
     Returns the same as resolve_turn.
     If commentator is provided, call its methods for play‑by‑play commentary.
+    If decision_tracker is provided, record decision events for later analysis.
     """
     if player is None:
         player = global_state.current_player
     collection = (0, 0, 0, 0, 0, 0)
     remaining = NUM_DICE - sum(collection)
+    # Cache for continuation values (computed lazily)
+    continuation_values = None
 
     while True:
         # Decide whether to stop now
         if policy.should_stop(collection):
+            if decision_tracker is not None:
+                if continuation_values is None:
+                    continuation_values = compute_turn_values(global_state)
+                stop_val = stop_reward(collection, global_state)
+                cont_val = continuation_values.get(collection, 0.0)
+                decision_tracker.record_stop_decision(collection, stop_val, cont_val)
             if commentator:
                 print(commentator.turn_end(player, collection_sum(collection)))
             break
 
         # Roll dice
         roll = random_roll(remaining)
+        if decision_tracker is not None:
+            decision_tracker.record_roll(collection, roll)
         if commentator:
             print(commentator.roll_result(player, roll))
         # Choose symbol to take
         symbol = policy.choose_symbol(collection, roll)
+        if decision_tracker is not None and symbol is not None:
+            decision_tracker.record_continue_decision(collection, symbol)
         if symbol is None:
             # No new symbol can be taken → forced failure
             # According to the rules, the turn ends immediately with failure.
@@ -250,7 +265,11 @@ def simulate_turn(global_state: GameState, policy: BaseTurnStrategy, player: int
         remaining = NUM_DICE - sum(collection)
 
     # Resolve outcome
-    return resolve_turn(collection, global_state)
+    worm_delta, helping_taken, taken_from = resolve_turn(collection, global_state)
+    if decision_tracker is not None and taken_from >= 0:
+        # Successful steal attempt
+        decision_tracker.record_steal_attempt(collection, taken_from, success=True)
+    return worm_delta, helping_taken, taken_from
 
 def initial_grill() -> List[Helping]:
     """Create the initial grill with all helpings face‑up."""
