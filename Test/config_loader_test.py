@@ -3,7 +3,7 @@
 import json
 import tempfile
 import os
-from config_loader import Config, PlayerConfig, load_config_file
+from config_loader import Config, PlayerConfig
 
 
 def test_config_class_creation():
