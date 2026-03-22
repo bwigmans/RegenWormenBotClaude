@@ -428,35 +428,35 @@ class StrategyBenchmark:
         Returns:
             Dictionary with compiled results
         """
+        total_games = self.config.num_games
+        num_players = len(strategy_names)
+
+        # For round-robin, each strategy plays (num_players - 1) * total_games games
+        games_per_strategy = (num_players - 1) * total_games if num_players > 1 else total_games
+
         results = {
             "config": {
-                "num_games": self.config.num_games,
+                "num_games": total_games,
                 "random_seed": self.config.random_seed,
-                "max_turns_per_game": self.config.max_turns_per_game,
-                "collect_decision_stats": self.config.collect_decision_stats,
-                "collect_timing": self.config.collect_timing,
                 "players": [
                     {
-                        "id": p.player_id,
-                        "strategy": p.strategy,
-                        "params": p.params
+                        "name": name,
+                        "config": self.config.players[idx].__dict__
                     }
-                    for p in self.config.players
+                    for idx, name in enumerate(strategy_names)
                 ]
             },
-            "strategies": {}
+            "metrics": {
+                name: self.metrics.get_strategy_metrics(name, games_per_strategy)
+                for name in strategy_names
+            },
+            "matchup_stats": {
+                "games_played": total_games,
+                "head_to_head_wins": {
+                    name: self.metrics.wins.get(name, 0)
+                    for name in strategy_names
+                }
+            }
         }
-
-        # Add metrics for each strategy
-        for strategy_name in strategy_names:
-            strategy_metrics = self.metrics.get_strategy_metrics(
-                strategy_name, self.config.num_games
-            )
-            results["strategies"][strategy_name] = strategy_metrics
-
-        # Add matchup statistics
-        results["matchups"] = {}
-        for matchup, count in self.metrics.game_counts.items():
-            results["matchups"][str(matchup)] = count
 
         return results
