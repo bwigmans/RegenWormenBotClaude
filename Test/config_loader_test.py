@@ -3,7 +3,7 @@
 import json
 import tempfile
 import os
-from config_loader import Config, PlayerConfig
+from config_loader import Config, PlayerConfig, load_config_file
 
 
 def test_config_class_creation():
@@ -68,3 +68,32 @@ def test_config_custom_values():
     assert config.collect_decision_stats is False
     assert config.collect_worm_distribution is False
     assert config.collect_timing is True
+
+
+def test_load_config_file_valid():
+    """Test loading a valid configuration file."""
+    config_data = {
+        "players": [
+            {"id": 0, "strategy": "optimal_expected", "params": {}},
+            {"id": 1, "strategy": "conservative", "params": {"stop_bias": 1.3}}
+        ],
+        "game_settings": {
+            "num_games": 500,
+            "random_seed": 123
+        }
+    }
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump(config_data, f)
+        fname = f.name
+
+    try:
+        config = load_config_file(fname)
+        assert len(config.players) == 2
+        assert config.players[0].strategy == "optimal_expected"
+        assert config.players[1].strategy == "conservative"
+        assert config.players[1].params["stop_bias"] == 1.3
+        assert config.num_games == 500
+        assert config.random_seed == 123
+    finally:
+        os.unlink(fname)
