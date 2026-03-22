@@ -3,7 +3,7 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from strategy_benchmark import DecisionTracker
+from strategy_benchmark import DecisionTracker, BenchmarkMetrics
 
 def test_decision_tracker_creation():
     """Test DecisionTracker class creation."""
@@ -166,3 +166,23 @@ def test_simulate_turn_with_decision_tracker():
 
     # Reset random seed
     random.seed()
+
+def test_benchmark_metrics_creation():
+    """Test BenchmarkMetrics class creation and updates."""
+    metrics = BenchmarkMetrics()
+
+    # Initial state
+    assert metrics.wins == {}
+    assert metrics.total_worms == {}
+    assert metrics.worm_squares == {}
+    assert metrics.game_counts == {}
+
+    # Update with a result
+    metrics.record_game_result("optimal_expected", 5, "conservative", 3)
+
+    assert metrics.wins["optimal_expected"] == 1
+    assert metrics.total_worms["optimal_expected"] == 5
+    assert metrics.total_worms["conservative"] == 3
+    assert metrics.worm_squares["optimal_expected"] == 25
+    # matchup is sorted alphabetically
+    assert metrics.game_counts[("conservative", "optimal_expected")] == 1

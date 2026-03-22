@@ -110,3 +110,124 @@ class DecisionTracker:
             "total_dice_rolled": total_dice_rolled,
             "avg_dice_per_roll": total_dice_rolled / self.roll_counts if self.roll_counts > 0 else 0.0
         }
+
+
+class BenchmarkMetrics:
+    """Collects and aggregates benchmarking metrics across multiple games."""
+
+    def __init__(self):
+        self.wins: Dict[str, int] = defaultdict(int)
+        self.total_worms: Dict[str, float] = defaultdict(float)
+        self.worm_squares: Dict[str, float] = defaultdict(float)  # For variance calculation
+        self.game_counts: Dict[Tuple[str, str], int] = defaultdict(int)
+        self.decision_stats: Dict[str, Dict[str, Any]] = defaultdict(dict)
+        self.timing_stats: Dict[str, List[float]] = defaultdict(list)
+
+    def record_game_result(self, strategy1: str, worms1: float,
+                          strategy2: str, worms2: float,
+                          decision_stats1: Optional[Dict] = None,
+                          decision_stats2: Optional[Dict] = None,
+                          timing1: Optional[float] = None,
+                          timing2: Optional[float] = None):
+        """
+        Record results from a single game.
+
+        Args:
+            strategy1: Name of first strategy
+            worms1: Worm count for first strategy
+            strategy2: Name of second strategy
+            worms2: Worm count for second strategy
+            decision_stats1: Decision statistics for strategy1 (optional)
+            decision_stats2: Decision statistics for strategy2 (optional)
+            timing1: Decision time for strategy1 in seconds (optional)
+            timing2: Decision time for strategy2 in seconds (optional)
+        """
+        # Record worm counts
+        self.total_worms[strategy1] += worms1
+        self.total_worms[strategy2] += worms2
+
+        # Record squares for variance calculation
+        self.worm_squares[strategy1] += worms1 * worms1
+        self.worm_squares[strategy2] += worms2 * worms2
+
+        # Determine winner
+        if worms1 > worms2:
+            self.wins[strategy1] += 1
+        elif worms2 > worms1:
+            self.wins[strategy2] += 1
+        else:
+            # Tie - split win
+            self.wins[strategy1] += 0.5
+            self.wins[strategy2] += 0.5
+
+        # Record game count for this matchup
+        matchup = tuple(sorted([strategy1, strategy2]))
+        self.game_counts[matchup] += 1
+
+        # Record decision stats if provided
+        if decision_stats1 is not None:
+            self._merge_decision_stats(strategy1, decision_stats1)
+        if decision_stats2 is not None:
+            self._merge_decision_stats(strategy2, decision_stats2)
+
+        # Record timing if provided
+        if timing1 is not None:
+            self.timing_stats[strategy1].append(timing1)
+        if timing2 is not None:
+            self.timing_stats[strategy2].append(timing2)
+
+    def _merge_decision_stats(self, strategy: str, stats: Dict[str, Any]):
+        """Merge decision statistics for a strategy."""
+        if strategy not in self.decision_stats:
+            self.decision_stats[strategy] = stats.copy()
+        else:
+            # Merge averages weighted by counts
+            current = self.decision_stats[strategy]
+            for key, value in stats.items():
+                if isinstance(value, (int, float)):
+                    if key in current:
+                        # Simple average for now
+                        current[key] = (current[key] + value) / 2
+                    else:
+                        current[key] = value
+                else:
+                    current[key] = value
+
+    def get_strategy_metrics(self, strategy: str, total_games: int) -> Dict[str, Any]:
+        """Get computed metrics for a specific strategy."""
+        wins = self.wins.get(strategy, 0)
+        total_worms = self.total_worms.get(strategy, 0)
+        worm_squares = self.worm_squares.get(strategy, 0)
+
+        win_rate = wins / total_games if total_games > 0 else 0.0
+        avg_worms = total_worms / total_games if total_games > 0 else 0.0
+
+        # Calculate variance: Var(X) = E[X^2] - (E[X])^2
+        variance = 0.0
+        if total_games > 0:
+            mean_squares = worm_squares / total_games
+            variance = mean_squares - (avg_worms * avg_worms)
+            variance = max(variance, 0.0)  # Avoid floating point errors
+
+        std_dev = variance ** 0.5 if variance > 0 else 0.0
+
+        # Get decision stats
+        decision_stats = self.decision_stats.get(strategy, {})
+
+        # Get timing stats
+        timing_data = self.timing_stats.get(strategy, [])
+        avg_time = statistics.mean(timing_data) if timing_data else 0.0
+        time_std = statistics.stdev(timing_data) if len(timing_data) > 1 else 0.0
+
+        return {
+            "win_rate": win_rate,
+            "avg_worms": avg_worms,
+            "worm_variance": variance,
+            "worm_std_dev": std_dev,
+            "total_wins": wins,
+            "total_worms": total_worms,
+            "decision_stats": decision_stats,
+            "avg_decision_time": avg_time,
+            "decision_time_std": time_std,
+            "games_played": total_games
+        }
