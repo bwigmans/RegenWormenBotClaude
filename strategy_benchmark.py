@@ -116,7 +116,7 @@ class BenchmarkMetrics:
     """Collects and aggregates benchmarking metrics across multiple games."""
 
     def __init__(self):
-        self.wins: Dict[str, int] = defaultdict(int)
+        self.wins: Dict[str, float] = defaultdict(float)
         self.total_worms: Dict[str, float] = defaultdict(float)
         self.worm_squares: Dict[str, float] = defaultdict(float)  # For variance calculation
         self.game_counts: Dict[Tuple[str, str], int] = defaultdict(int)
@@ -231,3 +231,232 @@ class BenchmarkMetrics:
             "decision_time_std": time_std,
             "games_played": total_games
         }
+
+
+class StrategyBenchmark:
+    """Main benchmarking class for evaluating strategies."""
+
+    def __init__(self, config):
+        """
+        Initialize benchmark with configuration.
+
+        Args:
+            config: Config object from config_loader
+        """
+        self.config = config
+        self.metrics = BenchmarkMetrics()
+        self.decision_trackers = {}  # strategy_name -> DecisionTracker
+        self.rng = random.Random(config.random_seed)
+
+    def run_benchmark(self) -> Dict[str, Any]:
+        """
+        Run benchmark based on configuration.
+
+        Returns:
+            Dictionary with benchmark results
+        """
+        if len(self.config.players) == 2:
+            return self._run_head_to_head_benchmark()
+        else:
+            return self._run_round_robin_benchmark()
+
+    def _run_head_to_head_benchmark(self) -> Dict[str, Any]:
+        """
+        Run head-to-head benchmark for exactly two players.
+
+        Returns:
+            Dictionary with benchmark results
+        """
+        if len(self.config.players) != 2:
+            raise ValueError("Head-to-head benchmark requires exactly 2 players")
+
+        player1_config = self.config.players[0]
+        player2_config = self.config.players[1]
+
+        for game_num in range(self.config.num_games):
+            # Generate deterministic game seed
+            game_seed = self.config.random_seed + game_num * 997
+
+            # Run single game
+            worms1, worms2, stats1, stats2, time1, time2 = self._run_single_game(
+                player1_config, player2_config, game_seed
+            )
+
+            # Record results
+            strategy1_name = f"{player1_config.strategy}_{player1_config.player_id}"
+            strategy2_name = f"{player2_config.strategy}_{player2_config.player_id}"
+
+            self.metrics.record_game_result(
+                strategy1_name, worms1,
+                strategy2_name, worms2,
+                decision_stats1=stats1,
+                decision_stats2=stats2,
+                timing1=time1,
+                timing2=time2
+            )
+
+        # Compile and return results
+        return self._compile_results([strategy1_name, strategy2_name])
+
+    def _run_single_game(self, player1_config, player2_config, game_seed):
+        """
+        Run a single game between two players.
+
+        Args:
+            player1_config: PlayerConfig for player 1
+            player2_config: PlayerConfig for player 2
+            game_seed: Random seed for this game
+
+        Returns:
+            Tuple of (worms1, worms2, stats1, stats2, time1, time2)
+        """
+        # Set random seed for this game
+        random.seed(game_seed)
+
+        # Import here to avoid circular imports
+        from simulation import initial_grill, simulate_turn, apply_turn_outcome, player_worms
+        from game_models import Player, GameState, EnhancedGameState
+        from strategies import create_strategy
+
+        # Initialize game state
+        grill = initial_grill()
+        players = [Player(0), Player(1)]
+        starting_player = random.randint(0, 1)
+        global_state = GameState(grill, players, starting_player)
+
+        # Initialize decision trackers if needed
+        if self.config.collect_decision_stats:
+            strategy1_name = f"{player1_config.strategy}_{player1_config.player_id}"
+            strategy2_name = f"{player2_config.strategy}_{player2_config.player_id}"
+            self.decision_trackers[strategy1_name] = DecisionTracker()
+            self.decision_trackers[strategy2_name] = DecisionTracker()
+
+        # Game loop
+        turn = 0
+        game_timing1 = []  # Store timing for player 1 in this game
+        game_timing2 = []  # Store timing for player 2 in this game
+        while any(h.face_up for h in grill) and turn < self.config.max_turns_per_game:
+            current_player = global_state.current_player
+            current_config = player1_config if current_player == 0 else player2_config
+
+            # Create enhanced game state
+            enhanced_state = EnhancedGameState(global_state)
+
+            # Create strategy for current player
+            strategy = create_strategy(
+                current_config.strategy,
+                enhanced_state,
+                current_player,
+                **current_config.params
+            )
+
+            # Get decision tracker for this player if collecting stats
+            decision_tracker = None
+            if self.config.collect_decision_stats:
+                strategy_name = f"{current_config.strategy}_{current_config.player_id}"
+                decision_tracker = self.decision_trackers.get(strategy_name)
+
+            # Simulate turn with timing if needed
+            start_time = time.perf_counter() if self.config.collect_timing else None
+
+            worm_delta, helping_taken, taken_from = simulate_turn(
+                global_state, strategy, player=current_player,
+                decision_tracker=decision_tracker
+            )
+
+            turn_time = None
+            if self.config.collect_timing and start_time is not None:
+                turn_time = time.perf_counter() - start_time
+
+            # Apply turn outcome
+            apply_turn_outcome(global_state, worm_delta, helping_taken, taken_from)
+
+            # Record timing for this game
+            if turn_time is not None:
+                if current_player == 0:
+                    game_timing1.append(turn_time)
+                else:
+                    game_timing2.append(turn_time)
+
+            turn += 1
+
+        # Compute final worm counts
+        worms1 = player_worms(players[0])
+        worms2 = player_worms(players[1])
+
+        # Get decision stats if collected
+        stats1 = None
+        stats2 = None
+        if self.config.collect_decision_stats:
+            strategy1_name = f"{player1_config.strategy}_{player1_config.player_id}"
+            strategy2_name = f"{player2_config.strategy}_{player2_config.player_id}"
+            tracker1 = self.decision_trackers.get(strategy1_name)
+            tracker2 = self.decision_trackers.get(strategy2_name)
+            if tracker1:
+                stats1 = tracker1.get_stats()
+            if tracker2:
+                stats2 = tracker2.get_stats()
+
+        # Get average timing if collected
+        time1 = None
+        time2 = None
+        if self.config.collect_timing:
+            if game_timing1:
+                time1 = sum(game_timing1) / len(game_timing1)
+            if game_timing2:
+                time2 = sum(game_timing2) / len(game_timing2)
+
+        return worms1, worms2, stats1, stats2, time1, time2
+
+    def _run_round_robin_benchmark(self) -> Dict[str, Any]:
+        """
+        Run round-robin benchmark for multiple players.
+
+        Returns:
+            Dictionary with benchmark results
+        """
+        # TODO: Implement in Task 7A
+        raise NotImplementedError("Round-robin benchmarking not yet implemented")
+
+    def _compile_results(self, strategy_names: List[str]) -> Dict[str, Any]:
+        """
+        Compile benchmark results into a structured dictionary.
+
+        Args:
+            strategy_names: List of strategy names that participated
+
+        Returns:
+            Dictionary with compiled results
+        """
+        results = {
+            "config": {
+                "num_games": self.config.num_games,
+                "random_seed": self.config.random_seed,
+                "max_turns_per_game": self.config.max_turns_per_game,
+                "collect_decision_stats": self.config.collect_decision_stats,
+                "collect_timing": self.config.collect_timing,
+                "players": [
+                    {
+                        "id": p.player_id,
+                        "strategy": p.strategy,
+                        "params": p.params
+                    }
+                    for p in self.config.players
+                ]
+            },
+            "strategies": {}
+        }
+
+        # Add metrics for each strategy
+        for strategy_name in strategy_names:
+            strategy_metrics = self.metrics.get_strategy_metrics(
+                strategy_name, self.config.num_games
+            )
+            results["strategies"][strategy_name] = strategy_metrics
+
+        # Add matchup statistics
+        results["matchups"] = {}
+        for matchup, count in self.metrics.game_counts.items():
+            results["matchups"][str(matchup)] = count
+
+        return results

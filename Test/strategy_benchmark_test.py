@@ -3,7 +3,7 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from strategy_benchmark import DecisionTracker, BenchmarkMetrics
+from strategy_benchmark import DecisionTracker, BenchmarkMetrics, StrategyBenchmark
 
 def test_decision_tracker_creation():
     """Test DecisionTracker class creation."""
@@ -186,3 +186,55 @@ def test_benchmark_metrics_creation():
     assert metrics.worm_squares["optimal_expected"] == 25
     # matchup is sorted alphabetically
     assert metrics.game_counts[("conservative", "optimal_expected")] == 1
+
+
+def test_strategy_benchmark_creation():
+    """Test StrategyBenchmark class creation."""
+    # Import here to avoid circular imports
+    from config_loader import Config, PlayerConfig
+
+    # Create a simple config with two players
+    players = [
+        PlayerConfig(player_id=0, strategy="optimal_expected", params={}),
+        PlayerConfig(player_id=1, strategy="conservative", params={"stop_bias": 1.2})
+    ]
+    config = Config(
+        players=players,
+        num_games=100,
+        random_seed=42,
+        verbose=False,
+        max_turns_per_game=1000,
+        collect_decision_stats=True,
+        collect_worm_distribution=True,
+        collect_timing=False
+    )
+
+    # Create benchmark instance
+    benchmark = StrategyBenchmark(config)
+
+    # Check that config is stored
+    assert benchmark.config == config
+
+    # Check that metrics object is created
+    assert hasattr(benchmark, 'metrics')
+    assert isinstance(benchmark.metrics, BenchmarkMetrics)
+
+    # Check that decision_trackers dict exists
+    assert hasattr(benchmark, 'decision_trackers')
+    assert isinstance(benchmark.decision_trackers, dict)
+
+    # Check that rng is created with correct seed
+    assert hasattr(benchmark, 'rng')
+    assert benchmark.rng is not None
+
+    # Check that run_benchmark method exists
+    assert hasattr(benchmark, 'run_benchmark')
+    assert callable(benchmark.run_benchmark)
+
+    # Check that head-to-head method exists
+    assert hasattr(benchmark, '_run_head_to_head_benchmark')
+    assert callable(benchmark._run_head_to_head_benchmark)
+
+    # Check that round-robin method exists (stub for now)
+    assert hasattr(benchmark, '_run_round_robin_benchmark')
+    assert callable(benchmark._run_round_robin_benchmark)
