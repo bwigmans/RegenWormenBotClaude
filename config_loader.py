@@ -49,7 +49,9 @@ def load_config_file(filepath: str) -> Config:
     except FileNotFoundError:
         raise FileNotFoundError(f"Configuration file not found: {filepath}")
     except json.JSONDecodeError as e:
-        raise json.JSONDecodeError(f"Invalid JSON in config file: {e.msg}", e.doc, e.pos)
+        raise json.JSONDecodeError(f"Invalid JSON in config file: {e.msg}", e.doc, e.pos) from e
+    except OSError as e:
+        raise OSError(f"Error reading config file {filepath}: {e}") from e
 
     return _create_config_from_dict(data)
 

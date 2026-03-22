@@ -3,6 +3,7 @@
 import json
 import tempfile
 import os
+import pytest
 from config_loader import Config, PlayerConfig, load_config_file
 
 
@@ -95,5 +96,24 @@ def test_load_config_file_valid():
         assert config.players[1].params["stop_bias"] == 1.3
         assert config.num_games == 500
         assert config.random_seed == 123
+    finally:
+        os.unlink(fname)
+
+
+def test_load_config_file_not_found():
+    """Test loading a non-existent configuration file."""
+    with pytest.raises(FileNotFoundError, match="Configuration file not found:"):
+        load_config_file("/nonexistent/path/to/file.json")
+
+
+def test_load_config_file_invalid_json():
+    """Test loading a configuration file with invalid JSON."""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        f.write("{ invalid json }")
+        fname = f.name
+
+    try:
+        with pytest.raises(json.JSONDecodeError, match="Invalid JSON in config file:"):
+            load_config_file(fname)
     finally:
         os.unlink(fname)
