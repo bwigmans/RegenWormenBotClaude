@@ -282,6 +282,6 @@ def test_generate_report():
     report = benchmark.generate_report(results)
 
     # Check report contains expected sections
-    assert "STRATEGY BENCHMARK REPORT" in report
+    assert "REGENWORMEN STRATEGY BENCHMARK RESULTS" in report
     assert "Win Rates" in report or "win" in report.lower()
     assert "Average Worms" in report or "worms" in report.lower()

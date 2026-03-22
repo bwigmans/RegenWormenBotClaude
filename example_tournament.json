@@ -1,0 +1,45 @@
+{
+  "players": [
+    {
+      "id": 0,
+      "strategy": "optimal_expected",
+      "params": {}
+    },
+    {
+      "id": 1,
+      "strategy": "risk_adjusted",
+      "params": {
+        "risk_aversion": 1.2
+      }
+    },
+    {
+      "id": 2,
+      "strategy": "endgame_focused",
+      "params": {
+        "endgame_stop_bias_leading": 1.8,
+        "endgame_continue_bias_trailing": 1.2,
+        "critical_endgame_multiplier": 1.5,
+        "score_gap_threshold": 5
+      }
+    },
+    {
+      "id": 3,
+      "strategy": "opponent_aware",
+      "params": {
+        "steal_preference": 1.6,
+        "risk_modifier": 0.7
+      }
+    }
+  ],
+  "game_settings": {
+    "num_games": 100,
+    "random_seed": 9999,
+    "verbose": false,
+    "max_turns_per_game": 1000
+  },
+  "benchmark_metrics": {
+    "collect_decision_stats": false,
+    "collect_worm_distribution": false,
+    "collect_timing": false
+  }
+}

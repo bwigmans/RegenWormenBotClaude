@@ -13,6 +13,7 @@ from typing import List, Tuple, Union
 from game_models import Helping, Player, EnhancedGameState
 from dice_utils import collection_sum, has_worm
 from strategies import create_strategy
+from config_loader import load_config_file
 from simulation import (
     initial_grill, simulate_turn, apply_turn_outcome,
     player_worms, random_roll
@@ -348,31 +349,57 @@ def main():
         "-s", "--seed", type=int, default=42,
         help="Random seed (default: 42)"
     )
+    parser.add_argument(
+        "-c", "--config",
+        help="Path to JSON configuration file (if not provided, uses default 4 strategies)"
+    )
     args = parser.parse_args()
 
     games_per_match = 2 if args.test else args.games
     verbose = not args.quiet
     seed = args.seed
 
-    # Define the 4 strategies for the bracket
-    strategies = {
-        "optimal_expected": {
-            "name": "optimal_expected",
-            "params": {}
-        },
-        "conservative": {
-            "name": "conservative",
-            "params": {"stop_bias": 1.3}
-        },
-        "aggressive": {
-            "name": "aggressive",
-            "params": {"continue_bias": 1.3}
-        },
-        "opponent_aware": {
-            "name": "opponent_aware",
-            "params": {"steal_preference": 1.2, "risk_modifier": 0.9}
+    # Load strategies from config file or use defaults
+    if args.config:
+        try:
+            config = load_config_file(args.config)
+            if len(config.players) != 4:
+                print(f"Error: Tournament requires exactly 4 players, got {len(config.players)}", file=sys.stderr)
+                sys.exit(1)
+            # Convert PlayerConfig to tournament format
+            strategies = {}
+            for player_config in config.players:
+                # Use strategy name with player ID as key to avoid collisions
+                key = f"{player_config.strategy}_{player_config.player_id}"
+                strategies[key] = {
+                    "name": player_config.strategy,
+                    "params": player_config.params
+                }
+            print(f"Loaded {len(strategies)} strategies from config file: {args.config}")
+        except Exception as e:
+            print(f"Error loading config file: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # Default 4 strategies for the bracket
+        strategies = {
+            "optimal_expected": {
+                "name": "optimal_expected",
+                "params": {}
+            },
+            "conservative": {
+                "name": "conservative",
+                "params": {"stop_bias": 1.3}
+            },
+            "aggressive": {
+                "name": "aggressive",
+                "params": {"continue_bias": 1.3}
+            },
+            "opponent_aware": {
+                "name": "opponent_aware",
+                "params": {"steal_preference": 1.2, "risk_modifier": 0.9}
+            }
         }
-    }
+        print("Using default tournament strategies")
 
     print("Starting Regenwormen Strategy Tournament")
     print(f"Each match: {games_per_match} games")

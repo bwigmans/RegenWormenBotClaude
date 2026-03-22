@@ -7,7 +7,10 @@ import random
 import math
 import statistics
 import time
+import argparse
+import sys
 from dice_utils import collection_sum
+from config_loader import load_config_file
 
 class DecisionTracker:
     """Tracks decisions during simulation for later analysis."""
@@ -24,6 +27,7 @@ class DecisionTracker:
         self.roll_counts: int = 0
         self.roll_symbol_counts: Dict[int, int] = defaultdict(int)  # symbol -> total count across all rolls
         self.symbol_choices: Dict[int, int] = defaultdict(int)  # symbol -> count
+        self.forced_failures: int = 0
 
     def record_roll(self, collection: Tuple[int, ...],
                    roll_counts: Tuple[int, ...]) -> None:
@@ -78,6 +82,18 @@ class DecisionTracker:
         if success:
             self.successful_steals += 1
 
+    def record_forced_failure(self, collection: Tuple[int, ...]) -> None:
+        """
+        Record a forced failure (no symbol available to take).
+
+        Args:
+            collection: 6-tuple of dice taken so far
+        """
+        self.forced_failures += 1
+        # Also count as a continue decision for total decision count
+        coll_sum = collection_sum(collection)
+        self.continue_counts[coll_sum] += 1
+
     def get_stats(self) -> Dict[str, Any]:
         """Get computed statistics from tracked decisions."""
         total_decisions = sum(self.stop_counts.values()) + sum(self.continue_counts.values())
@@ -93,6 +109,10 @@ class DecisionTracker:
         if self.steal_attempts > 0:
             steal_success_rate = self.successful_steals / self.steal_attempts
 
+        forced_failure_rate = 0.0
+        if total_decisions > 0:
+            forced_failure_rate = self.forced_failures / total_decisions
+
         total_dice_rolled = sum(self.roll_symbol_counts.values())
         avg_stop_reward = self.total_stop_reward / self.stop_decisions if self.stop_decisions > 0 else 0.0
         avg_continuation_value = self.total_continuation_value / self.stop_decisions if self.stop_decisions > 0 else 0.0
@@ -105,7 +125,9 @@ class DecisionTracker:
             "avg_value_difference": avg_value_difference,
             "steal_attempts": self.steal_attempts,
             "steal_success_rate": steal_success_rate,
-            "rolls_per_turn": self.roll_counts / max(self.stop_decisions, 1),
+            "forced_failures": self.forced_failures,
+            "forced_failure_rate": forced_failure_rate,
+            "rolls_per_turn": self.roll_counts / max(self.stop_decisions + self.forced_failures, 1),
             "total_decisions": total_decisions,
             "total_dice_rolled": total_dice_rolled,
             "avg_dice_per_roll": total_dice_rolled / self.roll_counts if self.roll_counts > 0 else 0.0
@@ -248,6 +270,15 @@ class StrategyBenchmark:
         self.decision_trackers = {}  # strategy_name -> DecisionTracker
         self.rng = random.Random(config.random_seed)
 
+    def _init_trackers(self):
+        """Initialize decision trackers for all players in config."""
+        if not self.config.collect_decision_stats:
+            return
+        for player_config in self.config.players:
+            strategy_name = f"{player_config.strategy}_{player_config.player_id}"
+            if strategy_name not in self.decision_trackers:
+                self.decision_trackers[strategy_name] = DecisionTracker()
+
     def run_benchmark(self) -> Dict[str, Any]:
         """
         Run benchmark based on configuration.
@@ -255,6 +286,9 @@ class StrategyBenchmark:
         Returns:
             Dictionary with benchmark results
         """
+        # Initialize decision trackers if needed
+        self._init_trackers()
+
         if len(self.config.players) == 2:
             return self._run_head_to_head_benchmark()
         else:
@@ -298,7 +332,7 @@ class StrategyBenchmark:
         # Compile and return results
         return self._compile_results([strategy1_name, strategy2_name])
 
-    def _run_single_game(self, player1_config, player2_config, game_seed):
+    def _run_single_game(self, player1_config, player2_config, game_seed) -> Tuple[int, int, Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[float], Optional[float]]:
         """
         Run a single game between two players.
 
@@ -324,12 +358,8 @@ class StrategyBenchmark:
         starting_player = random.randint(0, 1)
         global_state = GameState(grill, players, starting_player)
 
-        # Initialize decision trackers if needed
-        if self.config.collect_decision_stats:
-            strategy1_name = f"{player1_config.strategy}_{player1_config.player_id}"
-            strategy2_name = f"{player2_config.strategy}_{player2_config.player_id}"
-            self.decision_trackers[strategy1_name] = DecisionTracker()
-            self.decision_trackers[strategy2_name] = DecisionTracker()
+        # Decision trackers are initialized before benchmark runs
+        # (they are reused across games)
 
         # Game loop
         turn = 0
@@ -384,18 +414,8 @@ class StrategyBenchmark:
         worms1 = player_worms(players[0])
         worms2 = player_worms(players[1])
 
-        # Get decision stats if collected
-        stats1 = None
-        stats2 = None
-        if self.config.collect_decision_stats:
-            strategy1_name = f"{player1_config.strategy}_{player1_config.player_id}"
-            strategy2_name = f"{player2_config.strategy}_{player2_config.player_id}"
-            tracker1 = self.decision_trackers.get(strategy1_name)
-            tracker2 = self.decision_trackers.get(strategy2_name)
-            if tracker1:
-                stats1 = tracker1.get_stats()
-            if tracker2:
-                stats2 = tracker2.get_stats()
+        # Decision stats are aggregated across games, not returned per game
+        stats1 = stats2 = None
 
         # Get average timing if collected
         time1 = None
@@ -489,4 +509,140 @@ class StrategyBenchmark:
             }
         }
 
+        # Add decision statistics if collected
+        if self.config.collect_decision_stats:
+            results["decision_stats"] = {
+                name: self.decision_trackers[name].get_stats()
+                for name in strategy_names if name in self.decision_trackers
+            }
+
         return results
+
+    def generate_report(self, results: Dict[str, Any], output_format: str = "table") -> str:
+        """
+        Generate a human-readable report from benchmark results.
+
+        Args:
+            results: Results dictionary from _compile_results
+            output_format: "table" for console table, "json" for JSON output
+
+        Returns:
+            Formatted report string
+        """
+        if output_format == "json":
+            import json
+            return json.dumps(results, indent=2, default=str)
+
+        # Table format
+        lines = []
+        lines.append("=" * 80)
+        lines.append("REGENWORMEN STRATEGY BENCHMARK RESULTS")
+        lines.append("=" * 80)
+
+        # Configuration summary
+        config = results["config"]
+        lines.append(f"\nConfiguration:")
+        lines.append(f"  Games per matchup: {config['num_games']}")
+        lines.append(f"  Random seed: {config['random_seed']}")
+        lines.append(f"  Players: {len(config['players'])}")
+        for player in config["players"]:
+            lines.append(f"    - {player['name']}: {player['config']['strategy']} "
+                        f"(id={player['config']['player_id']})")
+
+        # Metrics table
+        lines.append("\n" + "=" * 80)
+        lines.append("STRATEGY PERFORMANCE METRICS")
+        lines.append("=" * 80)
+        lines.append(f"{'Strategy':<25} {'Win Rate':<12} {'Avg Worms':<12} {'Std Dev':<12} {'Avg Time (ms)':<15}")
+        lines.append("-" * 80)
+
+        metrics = results["metrics"]
+        for name, data in metrics.items():
+            win_rate = data.get("win_rate", 0.0)
+            avg_worms = data.get("avg_worms", 0.0)
+            std_dev = data.get("worm_std_dev", 0.0)
+            avg_time = data.get("avg_decision_time", 0.0) * 1000  # to ms
+            lines.append(f"{name:<25} {win_rate:<12.3f} {avg_worms:<12.2f} {std_dev:<12.2f} {avg_time:<15.2f}")
+
+        # Decision statistics (if collected)
+        lines.append("\n" + "=" * 80)
+        lines.append("DECISION STATISTICS (if collected)")
+        lines.append("=" * 80)
+        lines.append(f"{'Strategy':<25} {'Stop %':<12} {'Avg Stop Coll':<15} {'Steal Success %':<15} {'Forced Fail %':<15}")
+        lines.append("-" * 80)
+
+        # Use decision_stats from results if available
+        decision_stats_map = results.get("decision_stats", {})
+        for name, data in metrics.items():
+            decision_stats = decision_stats_map.get(name, {})
+            stop_freq = decision_stats.get("stop_frequency", 0.0) * 100
+            avg_stop_coll = decision_stats.get("avg_stop_collection", 0.0)
+            steal_success = decision_stats.get("steal_success_rate", 0.0) * 100
+            forced_fail = decision_stats.get("forced_failure_rate", 0.0) * 100
+            lines.append(f"{name:<25} {stop_freq:<12.1f} {avg_stop_coll:<15.2f} {steal_success:<15.1f} {forced_fail:<15.1f}")
+
+        # Head-to-head wins
+        lines.append("\n" + "=" * 80)
+        lines.append("HEAD-TO-HEAD WINS")
+        lines.append("=" * 80)
+        matchup_stats = results["matchup_stats"]
+        head_to_head = matchup_stats.get("head_to_head_wins", {})
+        for name, wins in head_to_head.items():
+            lines.append(f"{name:<25}: {wins:.1f} wins")
+
+        lines.append("\n" + "=" * 80)
+        return "\n".join(lines)
+
+
+def main():
+    """Command-line interface for strategy benchmarking."""
+    parser = argparse.ArgumentParser(
+        description="Run comprehensive benchmarking of Regenwormen strategies."
+    )
+    parser.add_argument(
+        "--config", "-c", required=True,
+        help="Path to JSON configuration file"
+    )
+    parser.add_argument(
+        "--output", "-o", default="table",
+        choices=["table", "json"],
+        help="Output format: table (human-readable) or json (machine-readable)"
+    )
+    parser.add_argument(
+        "--quiet", "-q", action="store_true",
+        help="Suppress progress output during benchmark"
+    )
+    args = parser.parse_args()
+
+    # Load configuration
+    try:
+        config = load_config_file(args.config)
+    except Exception as e:
+        print(f"Error loading configuration: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Create benchmark
+    benchmark = StrategyBenchmark(config)
+
+    # Run benchmark (with optional progress)
+    if not args.quiet:
+        print(f"Running benchmark with {len(config.players)} players...")
+        print(f"Games per matchup: {config.num_games}")
+        print(f"Collecting decision stats: {config.collect_decision_stats}")
+        print(f"Collecting timing: {config.collect_timing}")
+        print()
+
+    start_time = time.time()
+    results = benchmark.run_benchmark()
+    elapsed = time.time() - start_time
+
+    if not args.quiet:
+        print(f"Benchmark completed in {elapsed:.2f} seconds")
+
+    # Generate and print report
+    report = benchmark.generate_report(results, output_format=args.output)
+    print(report)
+
+
+if __name__ == "__main__":
+    main()

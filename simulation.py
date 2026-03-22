@@ -252,6 +252,8 @@ def simulate_turn(global_state: GameState, policy: BaseTurnStrategy, player: int
             # No new symbol can be taken → forced failure
             # According to the rules, the turn ends immediately with failure.
             # We'll break and let resolve_turn handle failure (no worm).
+            if decision_tracker is not None:
+                decision_tracker.record_forced_failure(collection)
             if commentator:
                 print(f"Player {player} cannot take any new symbol. Disaster!")
             break

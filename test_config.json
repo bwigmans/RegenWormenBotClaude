@@ -1,0 +1,25 @@
+{
+  "players": [
+    {
+      "id": 0,
+      "strategy": "optimal_expected",
+      "params": {}
+    },
+    {
+      "id": 1,
+      "strategy": "conservative",
+      "params": {"stop_bias": 1.2}
+    }
+  ],
+  "game_settings": {
+    "num_games": 2,
+    "random_seed": 999,
+    "verbose": false,
+    "max_turns_per_game": 10
+  },
+  "benchmark_metrics": {
+    "collect_decision_stats": true,
+    "collect_worm_distribution": true,
+    "collect_timing": false
+  }
+}
