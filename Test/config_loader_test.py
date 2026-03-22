@@ -117,3 +117,101 @@ def test_load_config_file_invalid_json():
             load_config_file(fname)
     finally:
         os.unlink(fname)
+
+
+def test_load_config_file_invalid_strategy():
+    """Test loading config with invalid strategy name."""
+    config_data = {
+        "players": [
+            {"id": 0, "strategy": "invalid_strategy", "params": {}}
+        ]
+    }
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump(config_data, f)
+        fname = f.name
+
+    try:
+        # Should raise ValueError for unknown strategy
+        with pytest.raises(ValueError, match="Unknown strategy"):
+            load_config_file(fname)
+    finally:
+        os.unlink(fname)
+
+
+def test_load_config_file_duplicate_ids():
+    """Test loading config with duplicate player IDs."""
+    config_data = {
+        "players": [
+            {"id": 0, "strategy": "optimal_expected", "params": {}},
+            {"id": 0, "strategy": "conservative", "params": {}}
+        ]
+    }
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump(config_data, f)
+        fname = f.name
+
+    try:
+        with pytest.raises(ValueError, match="Duplicate player ID"):
+            load_config_file(fname)
+    finally:
+        os.unlink(fname)
+
+
+def test_load_config_file_missing_id():
+    """Test loading config with missing player ID."""
+    config_data = {
+        "players": [
+            {"strategy": "optimal_expected", "params": {}}
+        ]
+    }
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump(config_data, f)
+        fname = f.name
+
+    try:
+        with pytest.raises(ValueError, match="missing required field 'id'"):
+            load_config_file(fname)
+    finally:
+        os.unlink(fname)
+
+
+def test_load_config_file_missing_strategy():
+    """Test loading config with missing strategy."""
+    config_data = {
+        "players": [
+            {"id": 0, "params": {}}
+        ]
+    }
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump(config_data, f)
+        fname = f.name
+
+    try:
+        with pytest.raises(ValueError, match="missing required field 'strategy'"):
+            load_config_file(fname)
+    finally:
+        os.unlink(fname)
+
+
+def test_load_config_file_non_sequential_ids():
+    """Test loading config with non-sequential player IDs."""
+    config_data = {
+        "players": [
+            {"id": 0, "strategy": "optimal_expected", "params": {}},
+            {"id": 2, "strategy": "conservative", "params": {}}
+        ]
+    }
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump(config_data, f)
+        fname = f.name
+
+    try:
+        with pytest.raises(ValueError, match="Player IDs must be sequential"):
+            load_config_file(fname)
+    finally:
+        os.unlink(fname)

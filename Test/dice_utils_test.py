@@ -42,3 +42,24 @@ def test_collection_sum():
 def test_has_worm():
     assert has_worm((0,0,0,0,0,1)) == True
     assert has_worm((0,0,0,0,0,0)) == False
+
+
+if __name__ == "__main__":
+    # Run all test functions
+    test_functions = [
+        test_multinomial_prob,
+        test_generate_all_rolls,
+        test_generate_all_collections,
+        test_collection_sum,
+        test_has_worm,
+    ]
+
+    for test_func in test_functions:
+        try:
+            test_func()
+            print(f"PASS {test_func.__name__}")
+        except AssertionError as e:
+            print(f"FAIL {test_func.__name__}: {e}")
+            raise
+
+    print("\nAll tests passed!")

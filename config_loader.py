@@ -3,6 +3,7 @@
 import json
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
+from strategies import STRATEGY_REGISTRY, validate_parameters
 
 
 @dataclass
@@ -61,13 +62,50 @@ def _create_config_from_dict(data: dict) -> Config:
     # Extract players
     players_data = data.get("players", [])
     players = []
+    seen_ids = set()
+
     for p_data in players_data:
+        player_id = p_data.get("id")
+        strategy_name = p_data.get("strategy")
+        params = p_data.get("params", {})
+
+        # Validate required fields
+        if player_id is None:
+            raise ValueError("Player configuration missing required field 'id'")
+        if strategy_name is None:
+            raise ValueError("Player configuration missing required field 'strategy'")
+
+        # Validate unique player IDs
+        if player_id in seen_ids:
+            raise ValueError(f"Duplicate player ID: {player_id}")
+        seen_ids.add(player_id)
+
+        # Validate strategy exists
+        if strategy_name not in STRATEGY_REGISTRY:
+            raise ValueError(f"Unknown strategy: {strategy_name}")
+
+        # Validate parameters
+        try:
+            validated_params = validate_parameters(params, strategy_name)
+        except ValueError as e:
+            raise ValueError(f"Invalid parameters for strategy '{strategy_name}': {e}")
+
         player = PlayerConfig(
-            player_id=p_data.get("id"),
-            strategy=p_data.get("strategy"),
-            params=p_data.get("params", {})
+            player_id=player_id,
+            strategy=strategy_name,
+            params=validated_params
         )
         players.append(player)
+
+    # Sort players by ID for consistent ordering
+    players.sort(key=lambda p: p.player_id)
+
+    # Validate sequential IDs (0..N-1)
+    if [p.player_id for p in players] != list(range(len(players))):
+        raise ValueError(
+            f"Player IDs must be sequential starting from 0. "
+            f"Found IDs: {[p.player_id for p in players]}"
+        )
 
     # Extract game settings with defaults
     game_settings = data.get("game_settings", {})
