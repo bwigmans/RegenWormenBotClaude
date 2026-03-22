@@ -66,3 +66,107 @@ class GameState:
             if i != self.current_player and p.top_helping:
                 result.append((i, p.top_helping))
         return result
+
+
+class EnhancedGameState(GameState):
+    """
+    Extended game state with additional information for strategy support.
+
+    Adds game phase detection, player position tracking, and score computation.
+    """
+
+    def __init__(self, grill, players, current_player, turn_dice=None):
+        super().__init__(grill, players, current_player, turn_dice)
+        self.turn_number = 0
+        self.scores = self._compute_scores()
+
+    def _compute_scores(self):
+        """Compute worm scores for all players."""
+        return [sum(h.worms for h in p.stack) for p in self.players]
+
+    def get_player_position(self, player_id):
+        """
+        Return position (1st, 2nd, etc.) and score difference.
+
+        Args:
+            player_id: Player index (0-based)
+
+        Returns:
+            Tuple of (position, score_difference) where:
+            - position: 1 for first place, 2 for second, etc.
+            - score_difference: Positive if leading next player (score above
+              player immediately behind), negative if trailing (score below
+              player immediately ahead), 0 if tied or single player.
+        """
+        scores = self.scores
+        player_score = scores[player_id]
+        sorted_scores = sorted(scores, reverse=True)
+        position = sorted_scores.index(player_score) + 1
+
+        if position == 1:
+            # Leading: compare to next lower score
+            next_lower = sorted_scores[1] if len(sorted_scores) > 1 else 0
+            score_diff = player_score - next_lower
+        else:
+            # Trailing: compare to next higher score
+            next_higher = sorted_scores[position - 2]  # position-2 is index of player ahead
+            score_diff = player_score - next_higher
+
+        return position, score_diff
+
+    def get_game_phase(self):
+        """
+        Return game phase: early, mid, endgame.
+
+        Based on number of face-up tiles on grill:
+        - early: >10 face-up tiles
+        - mid: 4-10 face-up tiles
+        - endgame: ≤3 face-up tiles
+        """
+        face_up_tiles = len([h for h in self.grill if h.face_up])
+        if face_up_tiles > 10:
+            return "early"
+        elif face_up_tiles > 3:
+            return "mid"
+        else:
+            return "endgame"
+
+    def get_enhanced_game_phase(self, score_gap_threshold=5):
+        """
+        Enhanced phase detection considering multiple factors.
+
+        Returns one of four phases: "early", "mid", "endgame", "critical_endgame".
+
+        Args:
+            score_gap_threshold: Score difference for "large lead" detection,
+                default 5 worms.
+
+        Detection logic:
+        1. Early: >10 face-up tiles
+        2. Mid: 4-10 face-up tiles
+        3. Endgame: ≤3 face-up tiles
+        4. Critical endgame: Endgame AND (no high-value tiles remain OR
+           large score gap exists)
+
+        High-value tiles: worms ≥ 3
+        Large score gap: max_score - min_score ≥ score_gap_threshold
+        """
+        face_up = len([h for h in self.grill if h.face_up])
+        if face_up > 10:
+            return "early"
+        elif face_up > 3:
+            return "mid"
+        else:
+            # Endgame by tile count
+            # Check if endgame characteristics are strong
+            high_value_remaining = any(h.worms >= 3 for h in self.grill if h.face_up)
+            scores = self.scores
+            max_score = max(scores) if scores else 0
+            min_score = min(scores) if scores else 0
+            score_gap = max_score - min_score
+
+            # Critical endgame if either no high-value tiles remain OR large score gap
+            if not high_value_remaining or score_gap >= score_gap_threshold:
+                return "critical_endgame"
+            else:
+                return "endgame"

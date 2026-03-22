@@ -39,3 +39,22 @@ def test_gamestate():
     assert len(others) == 1
     assert others[0][0] == 1
     assert others[0][1].number == 23
+
+
+if __name__ == "__main__":
+    # Run all test functions
+    test_functions = [
+        test_helping,
+        test_player,
+        test_gamestate,
+    ]
+
+    for test_func in test_functions:
+        try:
+            test_func()
+            print(f"PASS {test_func.__name__}")
+        except AssertionError as e:
+            print(f"FAIL {test_func.__name__}: {e}")
+            raise
+
+    print("\nAll tests passed!")
