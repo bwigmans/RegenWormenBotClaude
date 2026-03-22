@@ -238,3 +238,26 @@ def test_strategy_benchmark_creation():
     # Check that round-robin method exists (stub for now)
     assert hasattr(benchmark, '_run_round_robin_benchmark')
     assert callable(benchmark._run_round_robin_benchmark)
+
+def test_round_robin_benchmark():
+    """Test round-robin benchmarking with 3 players."""
+    from strategy_benchmark import StrategyBenchmark
+    from config_loader import Config, PlayerConfig
+
+    players = [
+        PlayerConfig(0, "optimal_expected", {}),
+        PlayerConfig(1, "conservative", {"stop_bias": 1.3}),
+        PlayerConfig(2, "aggressive", {"continue_bias": 1.3})
+    ]
+    config = Config(players=players, num_games=10, random_seed=42)
+    benchmark = StrategyBenchmark(config)
+
+    # Should run without error
+    results = benchmark.run_benchmark()
+
+    # Should have metrics for all 3 strategies
+    assert len(results["metrics"]) == 3
+    for strategy_name in ["optimal_expected_0", "conservative_1", "aggressive_2"]:
+        assert strategy_name in results["metrics"]
+        metrics = results["metrics"][strategy_name]
+        assert metrics["games_played"] == 20  # 2 opponents * 10 games each

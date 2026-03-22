@@ -340,7 +340,7 @@ class StrategyBenchmark:
             current_config = player1_config if current_player == 0 else player2_config
 
             # Create enhanced game state
-            enhanced_state = EnhancedGameState(global_state)
+            enhanced_state = EnhancedGameState(global_state.grill, global_state.players, global_state.current_player, global_state.turn_dice)
 
             # Create strategy for current player
             strategy = create_strategy(
@@ -415,8 +415,38 @@ class StrategyBenchmark:
         Returns:
             Dictionary with benchmark results
         """
-        # TODO: Implement in Task 7A
-        raise NotImplementedError("Round-robin benchmarking not yet implemented")
+        num_players = len(self.config.players)
+
+        # Generate unique strategy names
+        strategy_names = []
+        for player_config in self.config.players:
+            strategy_name = f"{player_config.strategy}_{player_config.player_id}"
+            strategy_names.append(strategy_name)
+
+        # Play each pair of players
+        for i in range(num_players):
+            for j in range(i + 1, num_players):
+                player1 = self.config.players[i]
+                player2 = self.config.players[j]
+                strategy1_name = strategy_names[i]
+                strategy2_name = strategy_names[j]
+
+                for game_num in range(self.config.num_games):
+                    game_seed = self.config.random_seed + game_num * 997 + i * 100 + j
+
+                    # Run single game
+                    worms1, worms2, stats1, stats2, time1, time2 = self._run_single_game(
+                        player1, player2, game_seed
+                    )
+
+                    # Record results
+                    self.metrics.record_game_result(
+                        strategy1_name, worms1, strategy2_name, worms2,
+                        decision_stats1=stats1, decision_stats2=stats2,
+                        timing1=time1, timing2=time2
+                    )
+
+        return self._compile_results(strategy_names)
 
     def _compile_results(self, strategy_names: List[str]) -> Dict[str, Any]:
         """
