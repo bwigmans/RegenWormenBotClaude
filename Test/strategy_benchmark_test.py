@@ -261,3 +261,27 @@ def test_round_robin_benchmark():
         assert strategy_name in results["metrics"]
         metrics = results["metrics"][strategy_name]
         assert metrics["games_played"] == 20  # 2 opponents * 10 games each
+
+
+def test_generate_report():
+    """Test report generation from benchmark results."""
+    from strategy_benchmark import StrategyBenchmark
+    from config_loader import Config, PlayerConfig
+
+    players = [
+        PlayerConfig(0, "optimal_expected", {}),
+        PlayerConfig(1, "conservative", {"stop_bias": 1.3})
+    ]
+    config = Config(players=players, num_games=10, random_seed=42)
+    benchmark = StrategyBenchmark(config)
+
+    # Run benchmark (mock results)
+    results = benchmark.run_benchmark()
+
+    # Generate report
+    report = benchmark.generate_report(results)
+
+    # Check report contains expected sections
+    assert "STRATEGY BENCHMARK REPORT" in report
+    assert "Win Rates" in report or "win" in report.lower()
+    assert "Average Worms" in report or "worms" in report.lower()
