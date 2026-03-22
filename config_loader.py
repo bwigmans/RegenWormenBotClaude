@@ -1,21 +1,24 @@
-"""
-Configuration loader for Regenwormen strategy benchmarking.
-"""
+"""Configuration loader for Regenwormen AI strategy benchmarking."""
+
 import json
-from typing import List, Dict, Any, Tuple, Optional
-import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Tuple
+from strategies import STRATEGY_REGISTRY, validate_parameters
+
 
 @dataclass
 class PlayerConfig:
-    """Configuration for a single player."""
+    """Configuration for a single player in a benchmark."""
+
     player_id: int
     strategy: str
-    params: Dict[str, Any]
+    params: Dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass
 class Config:
-    """Complete benchmark configuration."""
+    """Main configuration for benchmarking runs."""
+
     players: List[PlayerConfig]
     num_games: int = 1000
     random_seed: int = 42
@@ -24,3 +27,108 @@ class Config:
     collect_decision_stats: bool = True
     collect_worm_distribution: bool = True
     collect_timing: bool = False
+
+
+def load_config_file(filepath: str) -> Config:
+    """
+    Load and validate configuration from JSON file.
+
+    Args:
+        filepath: Path to JSON configuration file
+
+    Returns:
+        Config object
+
+    Raises:
+        FileNotFoundError: If file doesn't exist
+        json.JSONDecodeError: If invalid JSON
+        ValueError: If configuration validation fails
+    """
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Configuration file not found: {filepath}")
+    except json.JSONDecodeError as e:
+        raise json.JSONDecodeError(f"Invalid JSON in config file: {e.msg}", e.doc, e.pos) from e
+    except OSError as e:
+        raise OSError(f"Error reading config file {filepath}: {e}") from e
+
+    return _create_config_from_dict(data)
+
+
+def _create_config_from_dict(data: dict) -> Config:
+    """Create Config from dictionary with basic validation."""
+    # Extract players
+    players_data = data.get("players", [])
+    players = []
+    seen_ids = set()
+
+    for p_data in players_data:
+        player_id = p_data.get("id")
+        strategy_name = p_data.get("strategy")
+        params = p_data.get("params", {})
+
+        # Validate required fields
+        if player_id is None:
+            raise ValueError("Player configuration missing required field 'id'")
+        if strategy_name is None:
+            raise ValueError("Player configuration missing required field 'strategy'")
+
+        # Validate unique player IDs
+        if player_id in seen_ids:
+            raise ValueError(f"Duplicate player ID: {player_id}")
+        seen_ids.add(player_id)
+
+        # Validate strategy exists
+        if strategy_name not in STRATEGY_REGISTRY:
+            raise ValueError(f"Unknown strategy: {strategy_name}")
+
+        # Validate parameters
+        try:
+            validated_params = validate_parameters(params, strategy_name)
+        except ValueError as e:
+            raise ValueError(f"Invalid parameters for strategy '{strategy_name}': {e}")
+
+        player = PlayerConfig(
+            player_id=player_id,
+            strategy=strategy_name,
+            params=validated_params
+        )
+        players.append(player)
+
+    # Sort players by ID for consistent ordering
+    players.sort(key=lambda p: p.player_id)
+
+    # Validate sequential IDs (0..N-1)
+    if [p.player_id for p in players] != list(range(len(players))):
+        raise ValueError(
+            f"Player IDs must be sequential starting from 0. "
+            f"Found IDs: {[p.player_id for p in players]}"
+        )
+
+    # Extract game settings with defaults
+    game_settings = data.get("game_settings", {})
+    num_games = game_settings.get("num_games", 1000)
+    random_seed = game_settings.get("random_seed", 42)
+    verbose = game_settings.get("verbose", False)
+    max_turns_per_game = game_settings.get("max_turns_per_game", 1000)
+
+    # Extract benchmark metrics settings
+    benchmark_metrics = data.get("benchmark_metrics", {})
+    collect_decision_stats = benchmark_metrics.get("collect_decision_stats", True)
+    collect_worm_distribution = benchmark_metrics.get("collect_worm_distribution", True)
+    collect_timing = benchmark_metrics.get("collect_timing", False)
+
+    return Config(
+        players=players,
+        num_games=num_games,
+        random_seed=random_seed,
+        verbose=verbose,
+        max_turns_per_game=max_turns_per_game,
+        collect_decision_stats=collect_decision_stats,
+        collect_worm_distribution=collect_worm_distribution,
+        collect_timing=collect_timing
+    )
+
+
