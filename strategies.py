@@ -6,7 +6,10 @@
 from typing import Tuple, Optional, Dict, Any
 from abc import ABC, abstractmethod
 import warnings
-from game_models import GameState, Helping
+import copy
+import random
+import math
+from game_models import GameState, Helping, NUM_DICE
 from dice_utils import collection_sum, has_worm
 from decision_engine import compute_turn_values, stop_reward, failure_reward, compute_turn_utilities, compute_turn_values_with_continue_bias, utility_transform
 
@@ -401,6 +404,396 @@ class EndgameStrategy(OptimalExpectedValueStrategy):
         return abs(cont_val - stop_val) < 1e-9 or stop_val > cont_val
 
 
+class _MCTSNode:
+    """Internal node for MCTS (used by MonteCarloStrategy)."""
+    def __init__(self, state: GameState, collection: Tuple[int, ...],
+                 original_player: int, parent=None, action_taken=None):
+        self.state = state
+        self.collection = collection
+        self.original_player = original_player
+        self.parent = parent
+        self.action_taken = action_taken
+        self.children: Dict[str, '_MCTSNode'] = {}
+        self.visits = 0
+        self.value = 0.0
+
+    def is_fully_expanded(self, actions: list) -> bool:
+        return all(a in self.children for a in actions)
+
+    def best_child(self, exploration_constant: float = 1.414) -> '_MCTSNode':
+        return max(self.children.values(),
+                   key=lambda c: c.value / c.visits +
+                   exploration_constant * math.sqrt(2 * math.log(self.visits) / c.visits))
+
+    def add_child(self, action: str, child_state: GameState,
+                  child_collection: Tuple[int, ...]) -> '_MCTSNode':
+        node = _MCTSNode(child_state, child_collection, self.original_player,
+                         parent=self, action_taken=action)
+        self.children[action] = node
+        return node
+
+class MonteCarloStrategy(BaseTurnStrategy):
+    """
+    Monte Carlo Tree Search strategy for multi-turn planning.
+
+    Parameters:
+        num_iterations (int): Number of MCTS iterations per decision, default 2000
+        exploration_constant (float): UCB exploration constant, default 1.414
+        rollout_epsilon (float): Random action probability during rollouts, default 0.5
+        real_epsilon (float): Random action probability during real game, default 0.0
+        opponent_greedy (bool): Assume opponents use greedy optimal strategy, default True
+        max_rollout_turns (int): Maximum turns per rollout simulation, default 30
+        verbose (bool): Print debug information, default False
+    """
+
+    def __init__(self, global_state: GameState, player_id: int, **params):
+        super().__init__(global_state, player_id, **params)
+        self.num_iterations = params.get("num_iterations", 2000)
+        self.exploration_constant = params.get("exploration_constant", 1.414)
+        self.rollout_epsilon = params.get("rollout_epsilon", 0.5)
+        self.real_epsilon = params.get("real_epsilon", 0.0)
+        self.opponent_greedy = params.get("opponent_greedy", True)
+        self.max_rollout_turns = params.get("max_rollout_turns", 30)
+        self.verbose = params.get("verbose", False)
+        self._turn_values = compute_turn_values(global_state)
+        self._original_player = player_id
+        self._in_rollout = False
+
+    def should_stop(self, collection: Tuple[int, ...]) -> bool:
+        if not has_worm(collection):
+            return False
+        if sum(collection) == NUM_DICE:
+            return True
+
+        ev_turn = self._turn_values.get(collection, 0.0)
+        if self.verbose:
+            print(f"  ev_turn (expected worms from turn): {ev_turn:.2f}")
+
+        root = _MCTSNode(self.global_state, collection, self._original_player)
+
+        for _ in range(self.num_iterations):
+            node = root
+            while node.children and node.is_fully_expanded(self._legal_actions(node.state, node.collection)):
+                node = node.best_child(self.exploration_constant)
+
+            legal = self._legal_actions(node.state, node.collection)
+            for action in legal:
+                if action not in node.children:
+                    child_state, child_collection, _ = self._apply_action(node.state, node.collection, action)
+                    child_node = node.add_child(action, child_state, child_collection)
+                    value = self._simulate(child_state, child_collection)
+                    self._backpropagate(child_node, value)
+                    break
+            else:
+                value = self._simulate(node.state, node.collection)
+                self._backpropagate(node, value)
+
+        stop_val = None
+        cont_val = None
+        steal_val = None
+        if "stop" in root.children:
+            stop_node = root.children["stop"]
+            stop_val = stop_node.value / stop_node.visits
+        if "continue" in root.children:
+            cont_node = root.children["continue"]
+            cont_val = cont_node.value / cont_node.visits
+        if "steal" in root.children:
+            steal_node = root.children["steal"]
+            steal_val = steal_node.value / steal_node.visits
+
+        if self.verbose:
+            if stop_val is not None:
+                stop_reward_immediate = self._stop_reward(self.global_state, collection)
+                print(f"  stop reward: {stop_reward_immediate}, "
+                      f"future: {stop_val - stop_reward_immediate:.2f}, "
+                      f"stop value = {stop_val:.2f}")
+            else:
+                print("  stop not legal")
+            if steal_val is not None:
+                steal_reward_immediate = self._steal_reward(self.global_state, collection)
+                print(f"  steal reward: {steal_reward_immediate}, "
+                      f"future: {steal_val - steal_reward_immediate:.2f}, "
+                      f"steal value = {steal_val:.2f}")
+            if cont_val is not None:
+                print(f"  avg_future: {cont_val - ev_turn:.2f}")
+                print(f"  => continue value = {cont_val:.2f}")
+            else:
+                print("  continue not legal")
+
+        # Determine best action (stop, steal, continue) based on average value
+        best_action = None
+        best_val = -float('inf')
+        if stop_val is not None and stop_val > best_val:
+            best_val = stop_val
+            best_action = "stop"
+        if steal_val is not None and steal_val > best_val:
+            best_val = steal_val
+            best_action = "steal"
+        if cont_val is not None and cont_val > best_val:
+            best_val = cont_val
+            best_action = "continue"
+
+        # Return True if the best action is stop (or steal? Actually stop means end turn, but steal also ends turn)
+        # In should_stop we only care about whether to end the turn (stop/steal) vs continue.
+        if best_action in ("stop", "steal"):
+            return True
+        else:
+            return False
+
+    def choose_symbol(self, collection: Tuple[int, ...], roll_counts: Tuple[int, ...]) -> Optional[int]:
+        available = [s for s in range(6) if collection[s] == 0 and roll_counts[s] > 0]
+        if not available:
+            return None
+
+        current_sum = collection_sum(collection)
+        # Steal‑aware: if taking a die makes the sum equal to an opponent's top tile, take it.
+        for s in available:
+            die_val = s+1 if s < 5 else 5
+            new_sum = current_sum + die_val * roll_counts[s]
+            for i, p in enumerate(self.global_state.players):
+                if i != self.player_id and p.top_helping and p.top_helping.number == new_sum:
+                    return s
+
+        eps = self.rollout_epsilon if self._in_rollout else self.real_epsilon
+        if random.random() < eps:
+            return random.choice(available)
+
+        best_val = -float('inf')
+        best_s = None
+        for s in available:
+            new_coll = list(collection)
+            new_coll[s] += roll_counts[s]
+            val = self._turn_values.get(tuple(new_coll), 0.0)
+            if val > best_val:
+                best_val = val
+                best_s = s
+        return best_s
+
+    def update_game_state(self, new_state: GameState):
+        """Update internal state with new game state."""
+        super().update_game_state(new_state)
+        self._turn_values = compute_turn_values(new_state)
+
+    # ------------------------------------------------------------
+    # MCTS helpers
+    # ------------------------------------------------------------
+
+    def _apply_action(self, state: GameState, collection: Tuple[int, ...],
+                      action: str) -> Tuple[GameState, Tuple[int, ...], float]:
+        if action == "stop":
+            reward, tile = self._stop_reward_with_tile(state, collection)
+            new_state = self._apply_stop_state(state, collection, tile)
+            new_state.current_player = (new_state.current_player + 1) % len(new_state.players)
+            return new_state, (0,)*6, reward
+
+        if action == "steal":
+            reward = self._steal_reward(state, collection)
+            new_state = self._apply_steal_state(state, collection)
+            new_state.current_player = (new_state.current_player + 1) % len(new_state.players)
+            return new_state, (0,)*6, reward
+
+        if action == "continue":
+            remaining = NUM_DICE - sum(collection)
+            roll = self._random_roll(remaining)
+            self._in_rollout = True
+            symbol = self.choose_symbol(collection, roll)
+            self._in_rollout = False
+            if symbol is None:
+                new_state, reward = self._apply_failure(state)
+                return new_state, (0,)*6, reward
+            else:
+                new_collection = list(collection)
+                new_collection[symbol] += roll[symbol]
+                return state, tuple(new_collection), 0.0
+
+        raise ValueError(f"Unknown action: {action}")
+
+    def _simulate(self, state: GameState, collection: Tuple[int, ...]) -> float:
+        state = copy.deepcopy(state)
+        collection = list(collection)
+        worms_gained = 0
+        turns = 0
+
+        while True:
+            if not any(h.face_up for h in state.grill):
+                break
+            if turns >= self.max_rollout_turns:
+                break
+
+            is_main = (state.current_player == self._original_player)
+
+            actions = self._legal_actions(state, tuple(collection))
+            if not actions:
+                new_state, reward = self._apply_failure(state)
+                worms_gained += reward
+                state = new_state
+                collection = [0]*6
+                turns += 1
+                continue
+
+            if is_main:
+                if random.random() < self.rollout_epsilon:
+                    action = random.choice(actions)
+                else:
+                    action = self._greedy_action(state, tuple(collection), actions)
+            else:
+                if self.opponent_greedy:
+                    action = self._greedy_action(state, tuple(collection), actions)
+                else:
+                    if random.random() < self.rollout_epsilon:
+                        action = random.choice(actions)
+                    else:
+                        action = self._greedy_action(state, tuple(collection), actions)
+
+            new_state, new_collection, reward = self._apply_action(state, tuple(collection), action)
+            worms_gained += reward
+            state = new_state
+            collection = list(new_collection)
+            turns += 1
+
+        final_advantage = self._advantage(state)
+        return final_advantage + worms_gained
+
+    def _greedy_action(self, state: GameState, collection: Tuple[int, ...], actions: list) -> str:
+        best_val = -float('inf')
+        best_action = None
+        for a in actions:
+            if a == "continue":
+                val = self._turn_values.get(collection, 0.0)
+            else:
+                val = self._immediate_reward(state, collection, a)
+            if val > best_val:
+                best_val = val
+                best_action = a
+        return best_action
+
+    def _backpropagate(self, node: _MCTSNode, value: float):
+        while node is not None:
+            node.visits += 1
+            node.value += value
+            node = node.parent
+
+    # ------------------------------------------------------------
+    # Game mechanics helpers – official stop rule
+    # ------------------------------------------------------------
+    def _stop_reward(self, state: GameState, collection: Tuple[int, ...]) -> float:
+        reward, _ = self._stop_reward_with_tile(state, collection)
+        return reward
+
+    def _stop_reward_with_tile(self, state: GameState, collection: Tuple[int, ...]) -> Tuple[float, Optional[Helping]]:
+        s = collection_sum(collection)
+
+        # 1. Exact match on grill
+        for h in state.grill:
+            if h.face_up and h.number == s:
+                return h.worms, h
+
+        # 2. Largest lower tile on grill
+        lower = [h for h in state.grill if h.face_up and h.number < s]
+        if lower:
+            best = max(lower, key=lambda h: h.number)
+            return best.worms, best
+
+        # 3. No tile → failure (should not happen if stop is legal)
+        return 0.0, None
+
+    def _steal_reward(self, state: GameState, collection: Tuple[int, ...]) -> float:
+        s = collection_sum(collection)
+        for i, p in enumerate(state.players):
+            if i != state.current_player and p.top_helping and p.top_helping.number == s:
+                return p.top_helping.worms
+        return 0.0
+
+    def _apply_stop_state(self, state: GameState, collection: Tuple[int, ...], chosen_tile: Optional[Helping] = None) -> GameState:
+        new_state = copy.deepcopy(state)
+        if chosen_tile is not None:
+            for i, h in enumerate(new_state.grill):
+                if h is chosen_tile:
+                    new_state.grill.pop(i)
+                    new_state.players[new_state.current_player].add_helping(chosen_tile)
+                    break
+        # No flip here – the grill is not modified beyond removing the taken tile.
+        return new_state
+
+    def _apply_steal_state(self, state: GameState, collection: Tuple[int, ...]) -> GameState:
+        s = collection_sum(collection)
+        new_state = copy.deepcopy(state)
+        for i, p in enumerate(new_state.players):
+            if i != new_state.current_player and p.top_helping and p.top_helping.number == s:
+                stolen = p.remove_top_helping()
+                new_state.players[new_state.current_player].add_helping(stolen)
+                break
+        # No flip here
+        return new_state
+
+    def _apply_failure(self, state: GameState) -> Tuple[GameState, float]:
+        new_state = copy.deepcopy(state)
+        player = new_state.players[new_state.current_player]
+        lost = None
+        if player.top_helping:
+            lost = player.remove_top_helping()
+            lost.face_up = True
+            new_state.grill.append(lost)
+        # Flip the highest face‑up tile (excluding the one we just placed if it is the highest)
+        self._flip_highest_face_down(new_state, excluded_helping=lost)
+        new_state.current_player = (new_state.current_player + 1) % len(new_state.players)
+        reward = -lost.worms if lost else 0
+        return new_state, reward
+
+    def _flip_highest_face_down(self, state: GameState, excluded_helping=None):
+        face_up = [h for h in state.grill if h.face_up]
+        if not face_up:
+            return
+        highest = max(face_up, key=lambda h: h.number)
+        if excluded_helping is not None and highest is excluded_helping:
+            return
+        highest.face_up = False
+
+    def _legal_actions(self, state: GameState, collection: Tuple[int, ...]) -> list:
+        actions = []
+        if sum(collection) < NUM_DICE:
+            actions.append("continue")
+        if has_worm(collection):
+            s = collection_sum(collection)
+            # Stop is legal if there is an exact match on grill OR any lower tile
+            stop_legal = False
+            for h in state.grill:
+                if h.face_up and h.number == s:
+                    stop_legal = True
+                    break
+            if not stop_legal:
+                for h in state.grill:
+                    if h.face_up and h.number < s:
+                        stop_legal = True
+                        break
+            if stop_legal:
+                actions.append("stop")
+            # Steal is legal only on exact match with opponent's top
+            for i, p in enumerate(state.players):
+                if i != state.current_player and p.top_helping and p.top_helping.number == s:
+                    actions.append("steal")
+                    break
+        return actions
+
+    def _immediate_reward(self, state: GameState, collection: Tuple[int, ...], action: str) -> float:
+        if action == "stop":
+            return self._stop_reward(state, collection)
+        elif action == "steal":
+            return self._steal_reward(state, collection)
+        return 0.0
+
+    def _random_roll(self, remaining: int) -> Tuple[int, ...]:
+        counts = [0] * 6
+        for _ in range(remaining):
+            counts[random.randint(0, 5)] += 1
+        return tuple(counts)
+
+    def _advantage(self, state: GameState) -> float:
+        my_worms = sum(h.worms for h in state.players[self._original_player].stack)
+        opp_worms = max(sum(h.worms for h in p.stack) for i, p in enumerate(state.players) if i != self._original_player)
+        return my_worms - opp_worms
+
+
 # Strategy registry and factory
 STRATEGY_REGISTRY: Dict[str, type] = {
     "optimal_expected": OptimalExpectedValueStrategy,
@@ -409,6 +802,7 @@ STRATEGY_REGISTRY: Dict[str, type] = {
     "aggressive": AggressiveStrategy,
     "opponent_aware": OpponentAwareStrategy,
     "endgame_focused": EndgameStrategy,
+    "monte_carlo": MonteCarloStrategy,
 }
 
 # Parameter validation ranges for each strategy
@@ -433,6 +827,15 @@ PARAMETER_RANGES: Dict[str, Dict[str, tuple]] = {
         "endgame_continue_bias_trailing": (0.5, 3.0),
         "critical_endgame_multiplier": (1.0, 2.0),
         "score_gap_threshold": (0, 10),
+    },
+    "monte_carlo": {
+        "num_iterations": (100, 10000),
+        "exploration_constant": (0.1, 5.0),
+        "rollout_epsilon": (0.0, 1.0),
+        "real_epsilon": (0.0, 1.0),
+        "opponent_greedy": (0, 1),
+        "max_rollout_turns": (5, 100),
+        "verbose": (0, 1),
     },
 }
 
